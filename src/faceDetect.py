@@ -9,12 +9,11 @@ from .utils.logger_helper import logger
 
 
 class FaceDetector:
-    def __init__(self, model_type='buffalo_l', gallery_path=None, match_threshold=0.7, device='cpu'):
+    def __init__(self, model_type='buffalo_l', gallery_path=None, device='cpu'):
         # 加载人脸识别模型
         self.model = insightface.app.FaceAnalysis(model_type)
-
-        self.model.prepare(ctx_id=self.set_device(device))  # 使用CPU
-        self.match_threshold = match_threshold  # 匹配阈值
+        self.model.prepare(ctx_id=self.set_device(device))
+        
         self.gallery = {}
         if gallery_path:
             self.load_gallery(gallery_path)
