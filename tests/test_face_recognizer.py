@@ -29,15 +29,14 @@ def test_detect_face(recognizer, sample_image_path):
 def test_identify_face(recognizer, sample_image_path):
     # 测试人脸识别功能
     image = cv2.imread(sample_image_path)
-    identification = recognizer.identify_face(image)
+    face = recognizer.detect(image)
+    identification = recognizer.identify_face(face)
     assert identification is not None, "Should identify a face"
     assert identification['username'] == 'obama', "Should identify Obama"
 
-# def test_show_face(recognizer, sample_image_path, mocker):
-#     # 测试显示人脸功能
-#     mocker.patch('matplotlib.pyplot.show')  # 模拟plt.show()以避免实际显示图像
-#     image = cv2.imread(sample_image_path)
-#     result = recognizer.detect(image)
-#     recognizer.show_face(image, result)
-#     # 这个测试确保没有异常抛出，并且绘图函数被调用
-#     assert True, "Should execute show_face without errors"
+def test__detect_and_identify(recognizer, sample_image_path):
+    # 测试人脸识别功能
+    image = cv2.imread(sample_image_path)
+    identification = recognizer.detect_and_identify(image)
+    assert identification is not None, "Should identify a face"
+    assert identification['username'] == 'obama', "Should identify Obama"
