@@ -133,7 +133,7 @@ def crop_targets_from_video(video_path, crops, output_dir=None):
     # Process each crop specification
     for crop in crops:
         frame_id = crop['frame_id']
-        x1, y1, w, h = tlwh = crop['tlwh']
+        x1, y1, w, h = tlwh = correct_tlwh(crop['tlwh'])
         
         # Check if the frame_id is valid
         if frame_id >= frame_count:
@@ -146,7 +146,7 @@ def crop_targets_from_video(video_path, crops, output_dir=None):
             continue
 
         # Crop the image
-        crop_img = frame[max(0, y1): y1 + h, max(x1, 0): x1 + w]
+        crop_img = frame[y1: y1 + h, x1: x1 + w]
         # crop_img = frame
         # crop_img = cv2.resize(crop_img, dsize=None, fx=.57, fy=.57)
         # cv2.rectangle(crop_img, (x1, y1), (x1 + w, y1 + h), color=(0, 255, 0), thickness=2)
@@ -170,7 +170,7 @@ def crop_targets_from_video(video_path, crops, output_dir=None):
 videos = ['IMG_2230', 'IMG_2231', 'IMG_2232']
 res = []
 for video in videos:
-    df = load_mot_result(video_name = video) # , crop_folder="../data/crops"
+    df = load_mot_result(video_name = video, crop_folder="../data/crops") # , 
     res.append(df)
     
 df_all = pd.concat(res)
@@ -181,13 +181,19 @@ def append_crop_fn(item, folder):
     return os.path.join(folder, fn)
 
 df_all['crop_fn'] = df_all.apply(lambda x: append_crop_fn(x, "../data/crops"), axis=1)
-df_all
+df_all.head()
 
 
 #%%
-from faceDetect import FaceDetector
+from algs.faceDetect import FaceDetector
 
 recognizer = FaceDetector(gallery_path='../data/gallery')
+
+#%%
+from algs.ReID import encode_folder_crops_to_reid, load_ReID_model
+reid_model = load_ReID_model(model_dir='../ckpt/reid_model')
+fns, body_gallery = encode_folder_crops_to_reid(reid_model, '../data/app_gallery/wenke', is_normed=True)
+
 
 #%%
 res = []
@@ -197,37 +203,32 @@ for fn in df_all.crop_fn:
 len(res)
 
 #%%
-video_name = videos[2]
-df = df_all.query("video == @video_name")
+video_name = videos[1]
+track_id = 1
+df = df_all.query("video == @video_name and track_id == @track_id")
+df
 
 #%%
 import seaborn as sns
 from metric.similarity import cosine_similarity, get_dist_mat
+from algs.cluster import cluster_by_hdbscan, find_cluster_centers, Clusterer, display_cluster_images
+
 
 feats = np.vstack(df.feature)
-norms = np.linalg.norm(feats, axis=1, keepdims=True)
-feats = feats / norms
+# norms = np.linalg.norm(feats, axis=1, keepdims=True)
+# feats = feats / norms
 
-dis_mat = np.abs(1 - get_dist_mat(feats, feats, func_name='cosine'))
+dis_mat = np.abs(1 - cosine_similarity(feats, feats))
 sns.heatmap(dis_mat)
 
 
 # %%
-from sklearn.cluster import AgglomerativeClustering
-cluster1 = AgglomerativeClustering(
-    n_clusters=None,
-    distance_threshold=0.5,
-    metric='precomputed',
-    linkage='complete')
-cluster_labels1 = cluster1.fit_predict(dis_mat)
 
-cluster_labels1
-
-# %%
-import hdbscan
-from sklearn.cluster import AgglomerativeClustering, DBSCAN
+labels = cluster_by_hdbscan(dis_mat)
+find_cluster_centers(labels, dis_mat, mode='distance')
 
 
+#%%
 def get_match(cluster_labels):
     cluster_dict = dict()
     cluster = list()
@@ -240,27 +241,24 @@ def get_match(cluster_labels):
         cluster.append(cluster_dict[idx])
     return cluster
 
-def cluster_by_hdbscan(M):
-    clusterer = hdbscan.HDBSCAN(min_cluster_size=2, gen_min_span_tree=True, metric='precomputed')
-    clusterer.fit(M)
 
-    labels = clusterer.labels_
-
-    return labels
-
-def cluster_by_dbscan(M):
-    clusterer = DBSCAN(eps=0.18, min_samples=1, metric='precomputed')
-    clusterer.fit(M)
-
-    labels = clusterer.labels_
-
-    return labels
-
-cluster_by_dbscan(dis_mat)
 
 # %%
-cluster_by_hdbscan(dis_mat)
+cluster = Clusterer('hdbscan')
+labels = cluster.fit_predict(dis_mat)
+sorted_clusters = cluster.sort_cluster_members(dis_mat, labels)
+sorted_clusters
+
+# %%
+df.crop_fn
 
 
+# %%
+
+display_cluster_images(sorted_clusters, df.crop_fn, n=5)
+
+# %%
+
+cosine_similarity(feats, body_gallery)
 
 # %%
