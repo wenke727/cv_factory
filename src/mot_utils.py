@@ -41,7 +41,7 @@ def crop_targets_from_video(video_path, crops, output_dir=None):
     img_fns = []
     for crop in crops:
         frame_id = crop['frame_id']
-        x1, y1, w, h = tlwh = crop['tlwh']
+        x1, y1, x2, y2 = bbox = crop['bbox']
         
         if frame_id >= frame_count:
             continue
@@ -52,7 +52,7 @@ def crop_targets_from_video(video_path, crops, output_dir=None):
         if not ret:
             continue
 
-        crop_img = frame[max(0, y1): h, max(0, x1): w]
+        crop_img = frame[max(0, y1): y2, max(0, x1): x2]
 
         if output_dir:
             img_fn = os.path.join(output_dir, f"{crop['track_id']:03d}_{frame_id:04d}.jpg")
@@ -72,7 +72,7 @@ def load_mot_result(video_name = "IMG_2230", crop_folder=None):
     df = pd.read_csv(mot_res_path)
     df = df[df.frame_id % 10 == 0]
     
-    df.tlwh = df.tlwh.map(eval)
+    df['bbox'] = df.bbox.map(eval)
     df.feature = df.feature.apply(eval)
     df.loc[:, 'video'] = video_name
 
@@ -97,10 +97,21 @@ def detect_and_idntify_faces(recognizer, fns):
     
     return df_face
 
+def multimodal_similarity(face_feat1, body_feat1, voice_feat1, face_feat2, body_feat2, voice_feat2, weights=(0.4, 0.4, 0.2)):
+    """计算多模态相似度"""
+    face_sim = cosine_similarity(face_feat1, face_feat2)
+    body_sim = cosine_similarity(body_feat1, body_feat2)
+    voice_sim = cosine_similarity(voice_feat1, voice_feat2)
+    
+    # 加权平均
+    total_similarity = face_sim * weights[0] + body_sim * weights[1] + voice_sim * weights[2]
+    
+    return total_similarity
+
 
 # %%
 # 获取 crops 
-videos = ['IMG_2230', 'IMG_2231', 'IMG_2232']
+videos = ['IMG_2230', 'IMG_2231', 'IMG_2232', 'IMG_0169']
 
 res = []
 for video in videos:
