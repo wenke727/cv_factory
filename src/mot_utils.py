@@ -13,7 +13,13 @@ from metric.similarity import cosine_similarity, get_dist_mat
 import warnings
 warnings.filterwarnings("ignore")
 
+# 加载人脸识别模型
+recognizer = FaceDetector(gallery_path='../data/gallery')
+reid_model = load_ReID_model(model_dir='../ckpt/reid_model')
 
+_, appearance_gallery = encode_folder_crops_to_reid(reid_model, '../data/app_gallery/wenke', is_normed=True)
+
+#%%
 def crop_targets_from_video(video_path, crops, output_dir=None):
     """
     Crops and optionally saves images from a video based on provided bounding boxes.
@@ -87,11 +93,11 @@ def load_mot_result(video_name = "IMG_2230", crop_folder=None):
         
     return df
 
-def detect_and_idntify_faces(recognizer, fns):
+def detect_and_idntify_faces(recognizer, fns, match_threshold=.6):
     res = []
     for fn in fns:
         crop = cv2.imread(fn)
-        res.append(recognizer.detect_and_identify(crop))
+        res.append(recognizer.detect_and_identify(crop, match_threshold=match_threshold))
 
     df_face = pd.json_normalize(res).fillna(np.nan)
     
@@ -109,54 +115,89 @@ def multimodal_similarity(face_feat1, body_feat1, voice_feat1, face_feat2, body_
     return total_similarity
 
 
+
 # %%
 # 获取 crops 
-videos = ['IMG_2230', 'IMG_2231', 'IMG_2232', 'IMG_0169']
+videos = ['IMG_2230', 'IMG_2231', 'IMG_2232', 'IMG_0169', "IMG_0174"]
+videos = ["IMG_2232"]
 
 res = []
 for video in videos:
     df = load_mot_result(video_name = video, crop_folder="../data/crops")
     res.append(df)
-    
-df_all = pd.concat(res)
+
+df_all = pd.concat(res).reset_index(drop=True)
 df_all.head()
 
 
 #%%
-
-recognizer = FaceDetector(gallery_path='../data/gallery')
 df_face = detect_and_idntify_faces(recognizer, df_all.crop_fn)
-
-
-#%%
-
-reid_model = load_ReID_model(model_dir='../ckpt/reid_model')
-_, appearance_gallery = encode_folder_crops_to_reid(reid_model, '../data/app_gallery/wenke', is_normed=True)
-
+df_face
 
 #%%
-video_name = videos[0]
+face_renmame_dict = {
+    'tlwh': 'face_tlwh',
+    'embedding': 'face_emb',
+    'confidence': 'face_conf',
+    'similarity': 'face_sim',
+    'username': 'face_uuid',
+}
+
+reid_rename_dict = {
+    'conf': 'reid_conf',
+    'bbox': 'reid_tlwh',
+    'feature': 'reid_emb',
+}
+
+attrs = [
+    # 'video', 
+    # 'crop_fn', 
+    # 'quality', 
+    
+    # track 信息
+    'track_id', 
+    'frame_id', 
+
+    # reid 信息
+    'reid_tlwh', 
+    'reid_emb',
+    'reid_conf',
+
+    # 人脸信息，出现多张脸或者没有人脸的情况下，以下三个值为 None
+    'face_tlwh',
+    'face_emb', 
+    'face_conf', 
+
+    # 通过人脸匹配的用户
+    'face_sim',
+    'face_uuid',
+]
+
+feats = pd.concat([
+    df_all.rename(columns=reid_rename_dict),
+    df_face.rename(columns=face_renmame_dict)], axis=1)
+feats[attrs]
+
+#%%
+video_name = videos[-1]
 track_id = 1
 df = df_all.query("video == @video_name and track_id == @track_id")
 df
 
 #%%
-
 feats = np.vstack(df.feature)
 dis_mat = np.abs(1 - cosine_similarity(feats, feats))
 
-# %%
 cluster = Clusterer('hdbscan')
 labels = cluster.fit_predict(dis_mat)
 sorted_clusters = cluster.sort_cluster_members(dis_mat, labels)
+display_cluster_images(sorted_clusters, df.crop_fn, n=9)
+
 sorted_clusters
 
-
 # %%
-display_cluster_images(sorted_clusters, df.crop_fn, n=5)
-
-# %%
-
 appearance_sim_mat = cosine_similarity(feats, appearance_gallery)
+appearance_sim_mat
 
 # %%
+
