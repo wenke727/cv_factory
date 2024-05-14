@@ -126,7 +126,10 @@ class FaceDetector:
             return None
         
         x1, y1, x2, y2 = best_face.bbox.astype(int)
+        x1 = max(0, x1)
+        y1 = max(0, y1)
         tlwh = (x1, y1, x2 - x1, y2 - y1)
+        
         if norm is False:
             embedding = best_face.embedding
         else :

@@ -93,11 +93,16 @@ def load_mot_result(video_name = "IMG_2230", crop_folder=None):
         
     return df
 
-def detect_and_idntify_faces(recognizer, fns, match_threshold=.6):
+def detect_and_idntify_faces(recognizer: FaceDetector, fns, identify=False, match_threshold=.6):
     res = []
     for fn in fns:
         crop = cv2.imread(fn)
-        res.append(recognizer.detect_and_identify(crop, match_threshold=match_threshold))
+        if identify:
+            tmp = recognizer.detect_and_identify(crop, match_threshold=match_threshold)
+        else:
+            tmp = recognizer.detect(crop)
+            
+        res.append(tmp)
 
     df_face = pd.json_normalize(res).fillna(np.nan)
     
@@ -115,7 +120,6 @@ def multimodal_similarity(face_feat1, body_feat1, voice_feat1, face_feat2, body_
     return total_similarity
 
 
-
 # %%
 # 获取 crops 
 videos = ['IMG_2230', 'IMG_2231', 'IMG_2232', 'IMG_0169', "IMG_0174"]
@@ -127,11 +131,11 @@ for video in videos:
     res.append(df)
 
 df_all = pd.concat(res).reset_index(drop=True)
-df_all.head()
+df_all
 
 
 #%%
-df_face = detect_and_idntify_faces(recognizer, df_all.crop_fn)
+df_face = detect_and_idntify_faces(recognizer, df_all.crop_fn, identify=False)
 df_face
 
 #%%
@@ -149,19 +153,24 @@ reid_rename_dict = {
     'feature': 'reid_emb',
 }
 
+feats = pd.concat([
+    df_all.rename(columns=reid_rename_dict),
+    df_face.rename(columns=face_renmame_dict)], axis=1)
+
+#%%
 attrs = [
     # 'video', 
-    # 'crop_fn', 
+    'crop_fn', 
     # 'quality', 
+    # 'reid_tlwh', 
     
     # track 信息
     'track_id', 
     'frame_id', 
 
     # reid 信息
-    'reid_tlwh', 
     'reid_emb',
-    'reid_conf',
+    # 'reid_conf',
 
     # 人脸信息，出现多张脸或者没有人脸的情况下，以下三个值为 None
     'face_tlwh',
@@ -169,20 +178,19 @@ attrs = [
     'face_conf', 
 
     # 通过人脸匹配的用户
-    'face_sim',
-    'face_uuid',
+    # 'face_sim',
+    # 'face_uuid',
 ]
 
-feats = pd.concat([
-    df_all.rename(columns=reid_rename_dict),
-    df_face.rename(columns=face_renmame_dict)], axis=1)
-feats[attrs]
+feats[attrs].to_hdf(f"../data/feats/{video}.h5", 'feats')
+
+
 
 #%%
-video_name = videos[-1]
-track_id = 1
-df = df_all.query("video == @video_name and track_id == @track_id")
-df
+# video_name = videos[-1]
+# track_id = 1
+# df = df_all.query("video == @video_name and track_id == @track_id")
+# df
 
 #%%
 feats = np.vstack(df.feature)
