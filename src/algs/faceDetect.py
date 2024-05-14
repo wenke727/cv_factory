@@ -16,10 +16,10 @@ class FaceDetector:
             providers=['CUDAExecutionProvider', 'CPUExecutionProvider'],
             allowed_modules=['recognition', 'detection'])
         self.model.prepare(ctx_id=self.set_device(device))
-            
+
         self.min_width = 20
         self.min_height = 20
-        
+
         self.gallery = {}
         if gallery_path:
             self.load_gallery(gallery_path)
@@ -31,27 +31,28 @@ class FaceDetector:
             gpu_index = int(device.split(':')[-1]) if ':' in device else 0
             return gpu_index
         return 0
-            
+
     def load_gallery(self, gallery_path):
         """从指定文件夹加载人脸数据到画廊"""
         # try:
         for filename in os.listdir(gallery_path):
             if not filename.endswith(('.png', '.jpg', '.jpeg')):
                 continue
-            
+
             path = os.path.join(gallery_path, filename)
             username = filename.split('.')[0]
             face = self.detect(cv2.imread(path))
             if face is None:
                 continue
-            
+
             if face['embedding'] is not None:
                 self.gallery[username] = face['embedding']
             else:
                 print(f"Warning: No face detected in {filename}.")
 
         # except Exception as e:
-        #     logger.error(f"Failed to load gallery from {gallery_path}: {str(e)}")        
+        #     logger.error(f"Failed to load gallery from {gallery_path}: {str(e)}")
+        return self.gallery
 
     def get_embedding(self, image):
         """提取单个人脸的特征向量"""
@@ -93,7 +94,7 @@ class FaceDetector:
         if not face:
             return face
         face['username'] = None
-    
+
         best_match = None
         highest_similarity = 0
         face_encoding = face['embedding']
@@ -119,32 +120,32 @@ class FaceDetector:
         faces = self.model.get(image)
         if not faces:
             return None
-        
+
         # 选择置信度最高或者bbox面积最大的人脸
         best_face = max(faces, key=lambda x: x.det_score)
         if not self.is_valid_face(best_face):
             return None
-        
+
         x1, y1, x2, y2 = best_face.bbox.astype(int)
         x1 = max(0, x1)
         y1 = max(0, y1)
         tlwh = (x1, y1, x2 - x1, y2 - y1)
-        
+
         if norm is False:
             embedding = best_face.embedding
         else :
             embedding = best_face.embedding / np.linalg.norm(best_face.embedding)
-        
+
         return {
             'tlwh': tlwh,
             'embedding': embedding,
             'confidence': best_face.det_score
         }
-        
+
     def detect_and_identify(self, image, norm=True, match_threshold=0.7):
         face = self.detect(image, norm)
         face = self.identify(face, match_threshold)
-        
+
         return face
 
 
@@ -157,7 +158,7 @@ if __name__ == "__main__":
     recognizer.show_face(image, face)
     recognizer.identify(face)
 
-    # trump    
+    # trump
     image = cv2.imread('../data/trump.jpeg')
     face = recognizer.detect(image)
     recognizer.identify(face)

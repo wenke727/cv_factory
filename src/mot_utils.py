@@ -48,7 +48,7 @@ def crop_targets_from_video(video_path, crops, output_dir=None):
     for crop in crops:
         frame_id = crop['frame_id']
         x1, y1, x2, y2 = bbox = crop['bbox']
-        
+
         if frame_id >= frame_count:
             continue
 
@@ -64,11 +64,11 @@ def crop_targets_from_video(video_path, crops, output_dir=None):
             img_fn = os.path.join(output_dir, f"{crop['track_id']:03d}_{frame_id:04d}.jpg")
             img_fns.append(img_fn)
             cv2.imwrite(img_fn, crop_img)
-        
+
         cropped_images.append(crop_img)
 
     cap.release()
-    
+
     return cropped_images, img_fns
 
 def load_mot_result(video_name = "IMG_2230", crop_folder=None):
@@ -77,20 +77,20 @@ def load_mot_result(video_name = "IMG_2230", crop_folder=None):
 
     df = pd.read_csv(mot_res_path)
     df = df[df.frame_id % 10 == 0]
-    
+
     df['bbox'] = df.bbox.map(eval)
     df.feature = df.feature.apply(eval)
     df.loc[:, 'video'] = video_name
 
     if crop_folder:
         cropped_images, fns = crop_targets_from_video(
-            video_path, 
-            df.to_dict(orient='records'), 
+            video_path,
+            df.to_dict(orient='records'),
             output_dir = crop_folder + f'/{video_name}'
         )
 
         df['crop_fn'] = fns
-        
+
     return df
 
 def detect_and_idntify_faces(recognizer: FaceDetector, fns, identify=False, match_threshold=.6):
@@ -101,11 +101,11 @@ def detect_and_idntify_faces(recognizer: FaceDetector, fns, identify=False, matc
             tmp = recognizer.detect_and_identify(crop, match_threshold=match_threshold)
         else:
             tmp = recognizer.detect(crop)
-            
+
         res.append(tmp)
 
     df_face = pd.json_normalize(res).fillna(np.nan)
-    
+
     return df_face
 
 def multimodal_similarity(face_feat1, body_feat1, voice_feat1, face_feat2, body_feat2, voice_feat2, weights=(0.4, 0.4, 0.2)):
@@ -113,15 +113,15 @@ def multimodal_similarity(face_feat1, body_feat1, voice_feat1, face_feat2, body_
     face_sim = cosine_similarity(face_feat1, face_feat2)
     body_sim = cosine_similarity(body_feat1, body_feat2)
     voice_sim = cosine_similarity(voice_feat1, voice_feat2)
-    
+
     # 加权平均
     total_similarity = face_sim * weights[0] + body_sim * weights[1] + voice_sim * weights[2]
-    
+
     return total_similarity
 
 
 # %%
-# 获取 crops 
+# 获取 crops
 videos = ['IMG_2230', 'IMG_2231', 'IMG_2232', 'IMG_0169', "IMG_0174"]
 videos = ["IMG_2232"]
 
@@ -159,14 +159,14 @@ feats = pd.concat([
 
 #%%
 attrs = [
-    # 'video', 
-    'crop_fn', 
-    # 'quality', 
-    # 'reid_tlwh', 
-    
+    # 'video',
+    'crop_fn',
+    # 'quality',
+    # 'reid_tlwh',
+
     # track 信息
-    'track_id', 
-    'frame_id', 
+    'track_id',
+    'frame_id',
 
     # reid 信息
     'reid_emb',
@@ -174,8 +174,8 @@ attrs = [
 
     # 人脸信息，出现多张脸或者没有人脸的情况下，以下三个值为 None
     'face_tlwh',
-    'face_emb', 
-    'face_conf', 
+    'face_emb',
+    'face_conf',
 
     # 通过人脸匹配的用户
     # 'face_sim',
