@@ -4,13 +4,13 @@ import numpy as np
 import pandas as pd
 import seaborn as sns
 from pathlib import Path
+from loguru import logger
 from datetime import datetime
 from sklearn.cluster import KMeans
 from collections import defaultdict
 
 from algs.faceDetect import FaceDetector
 from algs.cluster import Clusterer, display_cluster_images
-from algs.ReID import encode_folder_crops_to_reid, load_ReID_model
 from metric.similarity import cosine_similarity, get_dist_mat
 from utils_helper.serialization import load_checkpoint
 
@@ -49,14 +49,14 @@ def convert_hdf_to_tracklet_data(fn):
 
 user_gallery = load_checkpoint('../data/gallery/wenke/gallery.ckpt')
 user_gallery['face_gallery'] = user_gallery['face_gallery'][np.newaxis, :]
-
+logger.info(f"appearance_filenames: {user_gallery['appearance_filenames']}")
 user_gallery
 
 tracks = convert_hdf_to_tracklet_data(fn='../data/feats/IMG_2232.h5')
 
 track_id = 1
 track_data = tracks[track_id]
-track_data
+# track_data
 
 #%%
 
@@ -93,8 +93,8 @@ class Tracklet:
             atts (dict, optional): _description_. Defaults to {}.
         """
         self.timestamps.append(timestamp)
-        self.face_embs.append(face_emb)
-        self.body_embs.append(body_emb)
+        self.face_embs.append(np.array(face_emb) if not np.isnan(face_emb).all() else np.nan)
+        self.body_embs.append(np.array(body_emb) if not np.isnan(body_emb).all() else np.nan)
         for k, v in atts.items():
             self.data[k][timestamp] = v
         if crop is not None:
@@ -104,10 +104,29 @@ class Tracklet:
 
         # TODO Here, you would also want to handle state updates and matching logic
 
-    def identify_per_frame(self):
-        # Implement logic to identify individual based on current frame's data
-        # This should include multimodal data fusion
-        pass
+    def identify_per_frame(self, verbose=True, face_fusion_thred=.4):
+        similarity = {}
+        if self.appearance_gallery.size > 0:
+            body_sim = cosine_similarity(self.body_embs[-1][np.newaxis, :], self.appearance_gallery)[0]
+            similarity['body'] = round(body_sim.max(), 3)
+
+        if self.face_gallery.size > 0 and isinstance(self.face_embs[-1], np.ndarray):
+            face_sim = cosine_similarity(self.face_embs[-1][np.newaxis, :], self.face_gallery)[0][0]
+            similarity['face'] = round(face_sim, 3)
+
+        # Determine the weights for each modality
+        weights = {'body': 0.25, 'face': 0.5}  # Adjust these based on empirical evidence or domain knowledge
+
+        # Calculate the weighted average similarity
+        if similarity and similarity.get('face', 0) > face_fusion_thred:
+            final_similarity = sum(similarity[mod] * weights[mod] for mod in similarity) \
+                / sum(weights[mod] for mod in similarity)
+            similarity['final_similarity'] = round(final_similarity, 3)
+
+        if verbose:
+            logger.debug(f"timestamp: {self.last_seen:4d}, similary: {str(similarity)}")
+
+        return 0
 
     def identify(self):
         # Implement logic to consolidate identity across the tracked frames
@@ -128,13 +147,23 @@ class Tracklet:
 
         return cos_sim
 
-    def distill_feat(self):
+    def distill_feat(self, plot=False):
         # Assuming all body encodings are stored in a list
-        all_encodings = np.vstack(self.body_embs)
-        kmeans = KMeans(n_clusters=1)  # You might want to set the number of clusters dynamically
-        kmeans.fit(all_encodings)
-        updated_feature = kmeans.cluster_centers_[0]
-        return updated_feature
+        body_feats = np.vstack(self.body_embs)
+        dis_mat = np.abs(1 - cosine_similarity(body_feats, body_feats))
+
+        cluster = Clusterer('hdbscan')
+        labels = cluster.fit_predict(dis_mat)
+        sorted_clusters = cluster.sort_cluster_members(dis_mat, labels)
+
+        if plot:
+            display_cluster_images(sorted_clusters, df.crop_fn, n=6)
+
+        rep_feats = []
+        for k, vals in sorted_clusters.items():
+            rep_feats.append([vals[0], tracker.body_embs[vals[0]]])
+
+        return rep_feats, sorted_clusters
 
     def get_latest(self):
         return {
@@ -166,40 +195,14 @@ tracker.set_gallery(
     face_gallery = user_gallery['face_gallery'],
     appearance_gallery = user_gallery['appearance_gallery'])
 
-
 for t, atts in track_data.items():
     tracker.update(timestamp = t, **atts)
+    tracker.identify_per_frame()
+
+# distill
+# rep_feats, _ = tracker.distill_feat(plot=True)
 
 df = tracker.convert_2_dataframe(with_atts=True)
-df
-
-# %%
-body_feats = np.vstack(df.body_emb)
-dis_mat = np.abs(1 - cosine_similarity(body_feats, body_feats))
-
-cluster = Clusterer('hdbscan')
-labels = cluster.fit_predict(dis_mat)
-sorted_clusters = cluster.sort_cluster_members(dis_mat, labels)
-display_cluster_images(sorted_clusters, df.crop_fn, n=6)
-
-sorted_clusters
-
-# %%
-body_feats = np.vstack(df.body_emb)
-dis_mat = np.abs(1 - cosine_similarity(body_feats, user_gallery['appearance_gallery']))
-
-sns.heatmap(dis_mat, annot=True)
-
-
-# %%
-body_feats = np.vstack(df.face_emb.dropna())
-dis_mat = np.abs(1 - cosine_similarity(body_feats, user_gallery['face_gallery']))
-
-sns.heatmap(dis_mat, annot=True)
-
-
-# %%
-user_gallery['face_gallery'].unsqueeze().shape
 
 
 # %%
