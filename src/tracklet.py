@@ -15,6 +15,16 @@ from metric.similarity import cosine_similarity, get_dist_mat
 from utils_helper.serialization import load_checkpoint
 
 
+def build_fusion_model(input_dim_face, input_dim_body):
+    # 创建模型架构
+    model = Sequential()
+    model.add(Concatenate([Dense(64, activation='relu', input_shape=(input_dim_face,)),
+                           Dense(64, activation='relu', input_shape=(input_dim_body,))]))
+    model.add(Dense(32, activation='relu'))
+    model.add(Dense(1, activation='sigmoid'))  # 假设是一个二分类问题
+    model.compile(optimizer='adam', loss='binary_crossentropy', metrics=['accuracy'])
+    return model
+
 def convert_hdf_to_tracklet_data(fn):
     df_feats = pd.read_hdf(fn)
     trackid_2_tracks = {}
@@ -59,6 +69,111 @@ track_data = tracks[track_id]
 # track_data
 
 #%%
+class MultiModalFusion:
+    def __init__(self, face_weight=0.5, body_weight=0.25, voice_weight=0.25):
+        self.weights = {'face': face_weight, 'body': body_weight, 'voice': voice_weight}
+        self.score_history = []
+        self.face_history = []
+        self.body_history = []
+        self.voice_history = []
+
+    def update_weights(self, light_condition, noise_level):
+        if light_condition < 0.5:
+            self.weights['face'] -= 0.2
+            self.weights['body'] += 0.1
+            self.weights['voice'] += 0.1
+        if noise_level > 0.5:
+            self.weights['voice'] -= 0.1
+            self.weights['face'] += 0.05
+            self.weights['body'] += 0.05
+
+    def add_score(self, face_score=None, body_score=None, voice_score=None, face_fusion_threshold=0.4):
+        """
+        Add a new score to the history based on the weighted sum of individual modality scores,
+        considering a threshold for the inclusion of face scores.
+
+        Parameters:
+            face_score (float, optional): The confidence score from face recognition.
+            body_score (float, optional): The confidence score from body recognition.
+            voice_score (float, optional): The confidence score from voice recognition.
+            face_fusion_threshold (float): The minimum threshold for face recognition score
+                                           to be considered in the fusion calculation.
+                                           Scores below this value are disregarded for the face modality.
+
+        Returns:
+            None. Updates the internal score history with the calculated weighted score.
+
+        The function calculates a combined score by applying predefined weights to the scores of
+        individual modalities. If the face score is below a specified threshold, it is not included
+        in the final score calculation. This method allows dynamic adjustment of the influence of
+        each modality based on its performance and reliability.
+        """
+        weight = 0
+        score = 0
+        if face_score is not None and face_score > face_fusion_threshold:
+            score += face_score * self.weights['face']
+            weight += self.weights['face']
+            self.face_history.append(face_score)
+
+        if body_score is not None:
+            score += body_score * self.weights['body']
+            weight += self.weights['body']
+            self.body_history.append(body_score)
+
+        if voice_score is not None:
+            score += voice_score * self.weights['voice']
+            weight += self.weights['voice']
+            self.voice_history.append(voice_score)
+
+        if weight > 0:
+            score = score / weight
+
+        self.score_history.append(score)
+        # logger.debug(f"fusion score: {score}")
+
+        return self.get_fusion_score()
+
+    def get_fusion_score(self, k=5):
+        """
+        Calculate the average of the square roots of the top k scores from the score history.
+
+        Parameters:
+            k (int): The number of top scores to consider for calculating the average.
+
+        Returns:
+            float: The average of the square roots of the top k scores. Returns None if there are
+                   fewer than k scores available in the history.
+
+        This method enhances the impact of higher scores on the final result by computing the
+        square root of the scores, which mitigates the influence of outlier low scores and
+        emphasizes higher values more than a simple average would.
+        """
+        if len(self.score_history) < k:
+            return {}
+
+        def get_top_k_mean(atts):
+            return np.mean(sorted(atts, reverse=True)[:k])
+
+        scores = {}
+        if self.score_history:
+            scores['conf'] = get_top_k_mean(self.score_history)
+        if self.face_history:
+            scores['face'] = get_top_k_mean(self.face_history)
+        if self.body_history:
+            scores['body'] = get_top_k_mean(self.body_history)
+        if self.voice_history:
+            scores['voice'] = get_top_k_mean(self.voice_history)
+
+        return scores
+
+    def is_confirmed(self, threshold=.6):
+        average_score = self.get_fusion_score()
+
+        if average_score is not None and average_score > threshold:
+            return True
+
+        return False
+
 
 class Tracklet:
     def __init__(self, track_id):
@@ -80,17 +195,20 @@ class Tracklet:
 
         self.match_history = []
         self.last_seen = None
+
+        self.fusion_modle = MultiModalFusion(face_weight=.5, body_weight=.25, voice_weight=.25)
         # self.state = 'active'  # Options: active, inactive, completed
 
     def update(self, timestamp, face_emb, body_emb, crop=None, atts: dict={}):
-        """_summary_
+        """
+        Update the tracking information for a frame.
 
-        Args:
-            timestamp (_type_): _description_
-            face_emb (_type_): _description_
-            body_emb (_type_): _description_
-            crop (_type_, optional): _description_. Defaults to cv2 image.
-            atts (dict, optional): _description_. Defaults to {}.
+        Parameters:
+            timestamp (datetime.datetime): The timestamp of the update.
+            face_emb (np.ndarray): Embedding for the face detected.
+            body_emb (np.ndarray): Embedding for the body detected.
+            crop (Optional[Any]): Cropped image of the detected entity.
+            atts (Dict[str, Any]): Additional attributes to record.
         """
         self.timestamps.append(timestamp)
         self.face_embs.append(np.array(face_emb) if not np.isnan(face_emb).all() else np.nan)
@@ -104,29 +222,53 @@ class Tracklet:
 
         # TODO Here, you would also want to handle state updates and matching logic
 
-    def identify_per_frame(self, verbose=True, face_fusion_thred=.4):
+    def identify_per_frame(self, verbose=True):
+        """
+        Identify and fuse modalities per frame, considering dynamic weights based on environmental factors
+        and modality reliability, specifically adjusting face recognition contributions.
+
+        Args:
+            verbose (bool): If set to True, detailed debug information will be logged.
+            face_fusion_threshold (float): The threshold for face recognition confidence above which
+                                        the face data is considered reliable enough to be included in the
+                                        multimodal fusion process. This threshold helps to mitigate the effects
+                                        of poor or misleading face recognition results, such as those caused by
+                                        partial occlusions, extreme angles, or low-quality images, where
+                                        features like the back of a head might be mistakenly identified as a face.
+
+        Returns:
+            bool: The function currently does not return a value but updates internal states. This should be
+                modified to return a decision or a score representing the fusion result for further actions.
+
+        Design Principle of face_fusion_threshold:
+            The face_fusion_threshold is designed to provide a control mechanism that filters out low-confidence
+            face recognition results from influencing the overall identity decision. By setting a threshold, only
+            face recognition results that meet or exceed this confidence level are considered. This is particularly
+            useful in environments where face data can be highly variable or when additional modalities (like body
+            or voice data) need to compensate for face data uncertainties.
+        """
         similarity = {}
         if self.appearance_gallery.size > 0:
-            body_sim = cosine_similarity(self.body_embs[-1][np.newaxis, :], self.appearance_gallery)[0]
-            similarity['body'] = round(body_sim.max(), 3)
+            body_emb = self.body_embs[-1][np.newaxis, :]
+            body_sim = cosine_similarity(body_emb, self.appearance_gallery)[0]
+            similarity['body_score'] = round(body_sim.max(), 3)
 
         if self.face_gallery.size > 0 and isinstance(self.face_embs[-1], np.ndarray):
-            face_sim = cosine_similarity(self.face_embs[-1][np.newaxis, :], self.face_gallery)[0][0]
-            similarity['face'] = round(face_sim, 3)
+            face_emb = self.face_embs[-1][np.newaxis, :]
+            face_sim = cosine_similarity(face_emb, self.face_gallery)[0][0]
+            similarity['face_score'] = round(face_sim, 3)
 
-        # Determine the weights for each modality
-        weights = {'body': 0.25, 'face': 0.5}  # Adjust these based on empirical evidence or domain knowledge
-
-        # Calculate the weighted average similarity
-        if similarity and similarity.get('face', 0) > face_fusion_thred:
-            final_similarity = sum(similarity[mod] * weights[mod] for mod in similarity) \
-                / sum(weights[mod] for mod in similarity)
-            similarity['final_similarity'] = round(final_similarity, 3)
+        score_fusion = self.add_score(**similarity)
+        score_fusion = {k : round(v, 3)for k, v in score_fusion.items()}
+        # similarity.update()
 
         if verbose:
-            logger.debug(f"timestamp: {self.last_seen:4d}, similary: {str(similarity)}")
+            logger.debug(f"timestamp: {self.last_seen:4d}, similary: {similarity}, fusion: {score_fusion}")
 
-        return 0
+        return similarity
+
+    def add_score(self, face_score=None, body_score=None, voice_score=None, face_fusion_threshold=0.4):
+        return self.fusion_modle.add_score(face_score, body_score, voice_score, face_fusion_threshold)
 
     def identify(self):
         # Implement logic to consolidate identity across the tracked frames
@@ -166,6 +308,9 @@ class Tracklet:
         return rep_feats, sorted_clusters
 
     def get_latest(self):
+        if len(self.timestamps) == 0:
+            return None
+
         return {
             'encoding': self.face_embs[-1],
             'location': self.face_locations[-1],
@@ -206,3 +351,4 @@ df = tracker.convert_2_dataframe(with_atts=True)
 
 
 # %%
+
