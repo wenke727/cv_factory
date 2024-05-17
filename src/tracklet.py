@@ -3,10 +3,8 @@ import cv2
 import numpy as np
 import pandas as pd
 import seaborn as sns
-from pathlib import Path
 from loguru import logger
 from datetime import datetime
-from sklearn.cluster import KMeans
 from collections import defaultdict
 
 from algs.faceDetect import FaceDetector
@@ -14,6 +12,12 @@ from algs.cluster import Clusterer, display_cluster_images
 from metric.similarity import cosine_similarity, get_dist_mat
 from utils_helper.serialization import load_checkpoint
 
+"""
+TODO
+1. 家庭的 gallery
+2. add
+
+"""
 
 def build_fusion_model(input_dim_face, input_dim_body):
     # 创建模型架构
@@ -57,18 +61,6 @@ def convert_hdf_to_tracklet_data(fn):
 
     return trackid_2_tracks
 
-user_gallery = load_checkpoint('../data/gallery/wenke/gallery.ckpt')
-user_gallery['face_gallery'] = user_gallery['face_gallery'][np.newaxis, :]
-logger.info(f"appearance_filenames: {user_gallery['appearance_filenames']}")
-user_gallery
-
-tracks = convert_hdf_to_tracklet_data(fn='../data/feats/IMG_2232.h5')
-
-track_id = 1
-track_data = tracks[track_id]
-# track_data
-
-#%%
 class MultiModalFusion:
     def __init__(self, face_weight=0.5, body_weight=0.25, voice_weight=0.25):
         self.weights = {'face': face_weight, 'body': body_weight, 'voice': voice_weight}
@@ -78,6 +70,7 @@ class MultiModalFusion:
         self.voice_history = []
 
     def update_weights(self, light_condition, noise_level):
+        # Change the wieghts by surroundings. But the ability to sense the env need to be build.
         if light_condition < 0.5:
             self.weights['face'] -= 0.2
             self.weights['body'] += 0.1
@@ -87,7 +80,11 @@ class MultiModalFusion:
             self.weights['face'] += 0.05
             self.weights['body'] += 0.05
 
-    def add_score(self, face_score=None, body_score=None, voice_score=None, face_fusion_threshold=0.4):
+    def add_score(self,
+                  face_score:float = None,
+                  body_score:float = None,
+                  voice_score:float = None,
+                  face_fusion_threshold: float=0.4):
         """
         Add a new score to the history based on the weighted sum of individual modality scores,
         considering a threshold for the inclusion of face scores.
@@ -129,7 +126,6 @@ class MultiModalFusion:
             score = score / weight
 
         self.score_history.append(score)
-        # logger.debug(f"fusion score: {score}")
 
         return self.get_fusion_score()
 
@@ -174,21 +170,23 @@ class MultiModalFusion:
 
         return False
 
-
 class Tracklet:
     def __init__(self, track_id):
         self.track_id = track_id
         self.timestamps = []
         self.crop_imgs = {} # cv2::img
+        self.crop_fns = []
 
+        # TODO 整个家庭的 gallery
         self.face_gallery = np.array([])
         self.voice_fallery = np.array([])
         self.appearance_gallery = np.array([])
 
         # reid
         self.body_embs = []
+        self.body_tlwhs = []
         self.face_embs = []
-        # self.face_embs = []
+        self.face_tlwhs = []
 
         # others attrs
         self.data = defaultdict(dict)
@@ -217,12 +215,14 @@ class Tracklet:
             self.data[k][timestamp] = v
         if crop is not None:
             self.crop_imgs[timestamp] = crop
+        if 'crop_fn' in atts:
+            self.crop_fns.append(atts['crop_fn'])
 
         self.last_seen = timestamp
+        self.identify()
 
-        # TODO Here, you would also want to handle state updates and matching logic
 
-    def identify_per_frame(self, verbose=True):
+    def identify(self, verbose=True):
         """
         Identify and fuse modalities per frame, considering dynamic weights based on environmental factors
         and modality reliability, specifically adjusting face recognition contributions.
@@ -263,16 +263,12 @@ class Tracklet:
         # similarity.update()
 
         if verbose:
-            logger.debug(f"timestamp: {self.last_seen:4d}, similary: {similarity}, fusion: {score_fusion}")
+            logger.debug(f"timestamp: {self.last_seen:4d}, fusion: {score_fusion}, similary: {similarity}")
 
         return similarity
 
     def add_score(self, face_score=None, body_score=None, voice_score=None, face_fusion_threshold=0.4):
         return self.fusion_modle.add_score(face_score, body_score, voice_score, face_fusion_threshold)
-
-    def identify(self):
-        # Implement logic to consolidate identity across the tracked frames
-        pass
 
     def set_gallery(self, face_gallery, appearance_gallery, voice_gallery=None):
         self.face_gallery = face_gallery
@@ -299,7 +295,8 @@ class Tracklet:
         sorted_clusters = cluster.sort_cluster_members(dis_mat, labels)
 
         if plot:
-            display_cluster_images(sorted_clusters, df.crop_fn, n=6)
+            fns = pd.Series(self.crop_fns, index=self.timestamps)
+            display_cluster_images(sorted_clusters, fns, n = 6)
 
         rep_feats = []
         for k, vals in sorted_clusters.items():
@@ -333,22 +330,31 @@ class Tracklet:
         return df
 
 
-# if __name__ == "__main__":
+if __name__ == "__main__":
+    user_gallery = load_checkpoint('../data/gallery/wenke/gallery.ckpt')
+    user_gallery['face_gallery'] = user_gallery['face_gallery'][np.newaxis, :]
+    logger.info(f"appearance_filenames: {user_gallery['appearance_filenames']}")
+    user_gallery
 
-tracker = Tracklet(track_id)
-tracker.set_gallery(
-    face_gallery = user_gallery['face_gallery'],
-    appearance_gallery = user_gallery['appearance_gallery'])
+    track_id = 1
+    tracks = convert_hdf_to_tracklet_data(fn='../data/feats/IMG_2232.h5')
+    track_data = tracks[track_id]
 
-for t, atts in track_data.items():
-    tracker.update(timestamp = t, **atts)
-    tracker.identify_per_frame()
+    tracker = Tracklet(track_id)
+    tracker.set_gallery(
+        face_gallery = user_gallery['face_gallery'],
+        appearance_gallery = user_gallery['appearance_gallery'])
 
-# distill
-# rep_feats, _ = tracker.distill_feat(plot=True)
+    for t, atts in track_data.items():
+        tracker.update(timestamp = t, **atts)
 
-df = tracker.convert_2_dataframe(with_atts=True)
+    #%%
+    df = tracker.convert_2_dataframe(with_atts=True)
+    df
 
+    #%%
+    # distill
+    rep_feats, _ = tracker.distill_feat(plot=True)
 
 # %%
 

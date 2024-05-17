@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning].
 
 ## [Unreleased]
 
-- /
+- Add family gallery
 
 ## [0.0.1] - 2024-04-16
 
