@@ -148,6 +148,8 @@ class FaceDetector:
 
         return face
 
+    def reset_gallery(self):
+        self.gallery = {}
 
 if __name__ == "__main__":
     recognizer = FaceDetector(gallery_path='../data/gallery')

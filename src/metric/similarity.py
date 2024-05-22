@@ -25,7 +25,7 @@ def cosine_similarity(x, y, eps=1e-12):
     x_norm = x / np.maximum(x_n, eps * np.ones_like(x_n))
     y_norm = y / np.maximum(y_n, eps * np.ones_like(y_n))
     sim_mt = np.dot(x_norm, y_norm.T)
-    
+
     return sim_mt
 
 
@@ -37,7 +37,7 @@ def get_cosine(x, y, eps=1e-12):
     similar in behavior to euclidean distance
     """
     sim_mt = cosine_similarity(x, y, eps)
-    
+
     return sim_mt
 
 
@@ -47,7 +47,7 @@ def get_dist_mat(x, y, func_name="euclidean"):
     elif func_name == "euclidean":
         dist_mat = get_euclidean(x, y)
     print("Using {} as distance function during evaluation".format(func_name))
-    
+
     return dist_mat
 
 

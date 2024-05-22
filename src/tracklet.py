@@ -7,9 +7,8 @@ from loguru import logger
 from datetime import datetime
 from collections import defaultdict
 
-from algs.faceDetect import FaceDetector
 from algs.cluster import Clusterer, display_cluster_images
-from metric.similarity import cosine_similarity, get_dist_mat
+from metric.similarity import cosine_similarity
 from utils_helper.serialization import load_checkpoint
 
 """
@@ -221,7 +220,6 @@ class Tracklet:
         self.last_seen = timestamp
         self.identify()
 
-
     def identify(self, verbose=True):
         """
         Identify and fuse modalities per frame, considering dynamic weights based on environmental factors
@@ -270,20 +268,13 @@ class Tracklet:
     def add_score(self, face_score=None, body_score=None, voice_score=None, face_fusion_threshold=0.4):
         return self.fusion_modle.add_score(face_score, body_score, voice_score, face_fusion_threshold)
 
-    def set_gallery(self, face_gallery, appearance_gallery, voice_gallery=None):
+    def set_gallery(self, face_gallery, appearance_gallery, voice_gallery = None):
         self.face_gallery = face_gallery
         self.appearance_gallery = appearance_gallery
         self.voice_fallery = voice_gallery
 
     def is_active(self, timeout_seconds=300):
         return (datetime.datetime.now() - self.last_seen).total_seconds() < timeout_seconds
-
-    def calculate_similarity(self, encoding):
-        # Assuming the use of cosine similarity
-        latest_encoding = self.face_embs[-1]
-        cos_sim = np.dot(latest_encoding, encoding) / (np.linalg.norm(latest_encoding) * np.linalg.norm(encoding))
-
-        return cos_sim
 
     def distill_feat(self, plot=False):
         # Assuming all body encodings are stored in a list
