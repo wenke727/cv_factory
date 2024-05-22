@@ -220,6 +220,7 @@ class Tracklet:
         self.last_seen = timestamp
         self.identify()
 
+
     def identify(self, verbose=True):
         """
         Identify and fuse modalities per frame, considering dynamic weights based on environmental factors
@@ -268,7 +269,7 @@ class Tracklet:
     def add_score(self, face_score=None, body_score=None, voice_score=None, face_fusion_threshold=0.4):
         return self.fusion_modle.add_score(face_score, body_score, voice_score, face_fusion_threshold)
 
-    def set_gallery(self, face_gallery, appearance_gallery, voice_gallery = None):
+    def set_gallery(self, face_gallery, appearance_gallery, voice_gallery=None):
         self.face_gallery = face_gallery
         self.appearance_gallery = appearance_gallery
         self.voice_fallery = voice_gallery
