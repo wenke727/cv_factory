@@ -165,6 +165,7 @@ class Tracklet:
         self.crop_imgs = {} # cv2::img
         self.crop_fns = []
 
+        # TODO 整个家庭的 gallery
         self.face_gallery = np.array([])
         self.voice_fallery = np.array([])
         self.appearance_gallery = np.array([])
@@ -208,6 +209,7 @@ class Tracklet:
         self.last_seen = timestamp
         self.identify()
 
+
     def identify(self, precise=4, verbose=True):
         """
         Identify and fuse modalities per frame, considering dynamic weights based on environmental factors
@@ -233,26 +235,29 @@ class Tracklet:
             useful in environments where face data can be highly variable or when additional modalities (like body
             or voice data) need to compensate for face data uncertainties.
         """
-        cand_face_idx, face_score = self.calculate_similarity(self.face_embs, self.face_gallery, precise)
-        cand_body_idx, body_score = self.calculate_similarity(self.body_embs, self.appearance_gallery, precise)
-
         similarity = {}
-        if face_score is not None:
-            similarity['face_score'] = face_score
-        if body_score is not None:
-            similarity['body_score'] = body_score
+        cand_face_idx = None
+        cand_body_idx = None
+        if self.appearance_gallery.size > 0:
+            body_emb = self.body_embs[-1][np.newaxis, :]
+            body_sim = cosine_similarity(body_emb, self.appearance_gallery)[0]
+            cand_body_idx = body_sim.argmax()
+            similarity['body_score'] = round(body_sim[cand_body_idx], precise)
+
+        if self.face_gallery.size > 0 and isinstance(self.face_embs[-1], np.ndarray):
+            face_emb = self.face_embs[-1][np.newaxis, :]
+            face_sim = cosine_similarity(face_emb, self.face_gallery)[0]
+            cand_face_idx = face_sim.argmax()
+            similarity['face_score'] = round(face_sim[cand_face_idx], precise)
 
         score_fusion = self.add_score(**similarity)
         score_fusion = {k : round(v, precise)for k, v in score_fusion.items()}
+        # similarity.update()
 
         if verbose:
-            info = "cands, "
-            if cand_face_idx is not None:
-                info += f"face {cand_face_idx}: {similarity.get('face_score'):.4f}, "
-            info += f"appearcne {cand_body_idx}: {similarity.get('body_score')}, "
-            info += f"conf: {score_fusion.get('conf')}"
-            logger.debug(info)
-            # logger.debug(score_fusion)
+            logger.debug(f"cands, face {cand_face_idx}: {similarity.get('face_score')}, "
+                         f"appearcne {cand_body_idx}: {similarity.get('body_score')} ")
+            # logger.debug(f"timestamp: {self.last_seen:4d}, fusion: {score_fusion}, similary: {similarity}")
 
         return similarity
 
@@ -311,17 +316,14 @@ class Tracklet:
 
         return df
 
-    def calculate_similarity(self, embeddings, gallery, precise=4):
-        if gallery.size > 0 and isinstance(embeddings[-1], np.ndarray):
-            emb = embeddings[-1][np.newaxis, :]
-            sim = cosine_similarity(emb, gallery)[0]
-            cand_idx = sim.argmax()
-            return cand_idx, round(sim[cand_idx], precise)
-
-        return None, None
 
 
 if __name__ == "__main__":
+    # user_gallery = load_checkpoint('../data/gallery/wenke/gallery.ckpt')
+    # user_gallery['face_gallery'] = user_gallery['face_gallery'][np.newaxis, :]
+    # logger.info(f"appearance_filenames: {user_gallery['appearance_filenames']}")
+    # user_gallery
+
     face_gallery, face_index_to_user, appearance_gallery, appearance_index_to_user = \
         load_and_unpack_gallery_data('../data/gallery/gallery.ckpt')
 
@@ -330,7 +332,9 @@ if __name__ == "__main__":
     track_data = tracks[track_id]
 
     tracker = Tracklet(track_id)
-    tracker.set_gallery(face_gallery, appearance_gallery)
+    tracker.set_gallery(
+        face_gallery = face_gallery,
+        appearance_gallery = appearance_gallery)
 
     for t, atts in track_data.items():
         tracker.update(timestamp = t, **atts)

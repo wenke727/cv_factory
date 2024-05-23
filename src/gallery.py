@@ -7,7 +7,7 @@ from loguru import logger
 from algs.faceDetect import FaceDetector
 from algs.ReID import encode_folder_crops_to_reid, load_ReID_model
 
-from utils_helper.serialization import save_checkpoint
+from utils_helper.serialization import save_checkpoint, load_checkpoint
 
 
 def load_user_gallery(face_detector, reid_model, user_folder):
@@ -50,7 +50,6 @@ def load_user_gallery(face_detector, reid_model, user_folder):
 
     return user_gallery
 
-
 def load_user_galleries(face_detector, person_reid_model, base_folder):
     """
     Load and concatenate galleries for multiple users.
@@ -81,14 +80,7 @@ def load_user_galleries(face_detector, person_reid_model, base_folder):
 
     return face_gallery, face_index_to_user, appearance_gallery, appearance_index_to_user
 
-
-if __name__ == "__main__":
-    # 加载人脸识别模型
-    face_detector = FaceDetector()
-    person_reid_model = load_ReID_model(model_dir='../ckpt/reid_model')
-
-    face_gallery, face_index_to_user, appearance_gallery, appearance_index_to_user = \
-        load_user_galleries(face_detector, person_reid_model, base_folder="../data/gallery")
+def pack_and_save_gallery_data(face_gallery, face_index_to_user, appearance_gallery, appearance_index_to_user):
     gallery = {
         "face_gallery": face_gallery,
         "face_index_to_user": face_index_to_user,
@@ -97,5 +89,30 @@ if __name__ == "__main__":
     }
     save_checkpoint(gallery, '../data/gallery/gallery.ckpt')
 
+
+
+def load_and_unpack_gallery_data(fn):
+    gallery = load_checkpoint(fn)
+
+    face_gallery = gallery["face_gallery"]
+    face_index_to_user = gallery["face_index_to_user"]
+    appearance_gallery = gallery["appearance_gallery"]
+    appearance_index_to_user = gallery["appearance_index_to_user"]
+
+    logger.debug(f"Face galley {len(face_gallery)}: {list(face_index_to_user)}")
+    logger.debug(f"Appearnce galley {len(appearance_index_to_user)}: {list(appearance_index_to_user)}")
+
+    return face_gallery, face_index_to_user, appearance_gallery, appearance_index_to_user
+
+if __name__ == "__main__":
+    # 加载人脸识别模型
+    face_detector = FaceDetector()
+    person_reid_model = load_ReID_model(model_dir='../ckpt/reid_model')
+
+    face_gallery, face_index_to_user, appearance_gallery, appearance_index_to_user = \
+        load_user_galleries(face_detector, person_reid_model, base_folder="../data/gallery")
+
+    pack_and_save_gallery_data(face_gallery, face_index_to_user,
+                               appearance_gallery, appearance_index_to_user)
 
 # %%
