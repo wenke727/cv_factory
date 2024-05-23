@@ -7,13 +7,13 @@ from loguru import logger
 from datetime import datetime
 from collections import defaultdict
 
+from algs.searcher import NumpySearcher
 from algs.cluster import Clusterer, display_cluster_images
 from metric.similarity import cosine_similarity
 from gallery import load_and_unpack_gallery_data
 
 """
 TODO
-x 1. 家庭的 gallery
 2. face 和 body 冲突的情况
 """
 
@@ -160,14 +160,18 @@ class MultiModalFusion:
 
 class Tracklet:
     def __init__(self, track_id):
-        self.track_id = track_id
-        self.timestamps = []
-        self.crop_imgs = {} # cv2::img
-        self.crop_fns = []
-
+        # gallery relarted
         self.face_gallery = np.array([])
         self.voice_fallery = np.array([])
         self.appearance_gallery = np.array([])
+        self.face_index_to_user = np.array([])
+        self.appearance_index_to_user = np.array([])
+        self.voice_index_to_user = np.array([])
+
+        self.track_id = track_id
+        self.timestamps = []
+        self.crop_imgs = {}
+        self.crop_fns = []
 
         # reid
         self.body_embs = []
@@ -251,11 +255,12 @@ class Tracklet:
         score_fusion = {k : round(v, precise)for k, v in score_fusion.items()}
 
         if verbose:
-            info = "cands, "
+            info = "Similarity: "
             if cand_face_idx is not None:
-                info += f"face {cand_face_idx}: {similarity.get('face_score'):.4f}, "
-            info += f"appearcne {cand_body_idx}: {similarity.get('body_score')}, "
-            info += f"conf: {score_fusion.get('conf')}"
+                info += f"😊 {self.face_index_to_user[cand_face_idx]}: {similarity.get('face_score'):.4f}, "
+            info += f"🚶 {self.appearance_index_to_user[cand_body_idx]}: {similarity.get('body_score')}, "
+            if score_fusion.get('conf'):
+                info += f"🚀 conf: {score_fusion.get('conf')}"
             logger.debug(info)
 
         return similarity
@@ -263,10 +268,16 @@ class Tracklet:
     def add_score(self, face_score=None, body_score=None, voice_score=None, face_fusion_threshold=0.4):
         return self.fusion_modle.add_score(face_score, body_score, voice_score, face_fusion_threshold)
 
-    def set_gallery(self, face_gallery, appearance_gallery, voice_gallery=None):
+    def set_gallery(self,
+                    face_gallery, face_index_to_user,
+                    appearance_gallery, appearance_index_to_user,
+                    voice_gallery=None, voice_index_to_user=None):
         self.face_gallery = face_gallery
+        self.face_index_to_user = face_index_to_user
         self.appearance_gallery = appearance_gallery
+        self.appearance_index_to_user = appearance_index_to_user
         self.voice_fallery = voice_gallery
+        self.voice_index_to_user = voice_index_to_user
 
     def is_active(self, timeout_seconds=300):
         return (datetime.datetime.now() - self.last_seen).total_seconds() < timeout_seconds
@@ -336,7 +347,7 @@ if __name__ == "__main__":
     track_data = tracks[track_id]
 
     tracker = Tracklet(track_id)
-    tracker.set_gallery(face_gallery, appearance_gallery)
+    tracker.set_gallery(face_gallery, face_index_to_user, appearance_gallery, appearance_index_to_user)
 
     for t, atts in track_data.items():
         tracker.update(timestamp = t, **atts)
