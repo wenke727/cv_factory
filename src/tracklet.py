@@ -9,24 +9,13 @@ from collections import defaultdict
 
 from algs.cluster import Clusterer, display_cluster_images
 from metric.similarity import cosine_similarity
-from utils_helper.serialization import load_checkpoint
+from gallery import load_and_unpack_gallery_data
 
 """
 TODO
-1. 家庭的 gallery
-2. add
-
+x 1. 家庭的 gallery
+2. face 和 body 冲突的情况
 """
-
-def build_fusion_model(input_dim_face, input_dim_body):
-    # 创建模型架构
-    model = Sequential()
-    model.add(Concatenate([Dense(64, activation='relu', input_shape=(input_dim_face,)),
-                           Dense(64, activation='relu', input_shape=(input_dim_body,))]))
-    model.add(Dense(32, activation='relu'))
-    model.add(Dense(1, activation='sigmoid'))  # 假设是一个二分类问题
-    model.compile(optimizer='adam', loss='binary_crossentropy', metrics=['accuracy'])
-    return model
 
 def convert_hdf_to_tracklet_data(fn):
     df_feats = pd.read_hdf(fn)
@@ -176,7 +165,6 @@ class Tracklet:
         self.crop_imgs = {} # cv2::img
         self.crop_fns = []
 
-        # TODO 整个家庭的 gallery
         self.face_gallery = np.array([])
         self.voice_fallery = np.array([])
         self.appearance_gallery = np.array([])
@@ -220,49 +208,55 @@ class Tracklet:
         self.last_seen = timestamp
         self.identify()
 
-
-    def identify(self, verbose=True):
+    def identify(self, similarity_thres=.3, precise=4, verbose=True):
         """
-        Identify and fuse modalities per frame, considering dynamic weights based on environmental factors
-        and modality reliability, specifically adjusting face recognition contributions.
+        Identifies and fuses modalities per frame using dynamic weights based on environmental
+        factors and modality reliability, specifically adjusting face recognition contributions.
+
+        The function calculates similarity scores for face and body modalities, applies a threshold to
+        filter out low-confidence results, and then fuses these scores to determine a combined result.
 
         Args:
-            verbose (bool): If set to True, detailed debug information will be logged.
-            face_fusion_threshold (float): The threshold for face recognition confidence above which
-                                        the face data is considered reliable enough to be included in the
-                                        multimodal fusion process. This threshold helps to mitigate the effects
-                                        of poor or misleading face recognition results, such as those caused by
-                                        partial occlusions, extreme angles, or low-quality images, where
-                                        features like the back of a head might be mistakenly identified as a face.
+            similarity_thres (float): The threshold for recognition confidence. Scores below this
+                                    threshold are not considered reliable and are thus filtered out.
+                                    Default is 0.3.
+            precise (int): The number of decimal places to which results should be rounded. This affects
+                        the precision of the output scores. Default is 4.
+            verbose (bool): If set to True, detailed debug information, including candidate indices and scores,
+                            will be logged. Default is True.
 
         Returns:
-            bool: The function currently does not return a value but updates internal states. This should be
-                modified to return a decision or a score representing the fusion result for further actions.
+            dict: A dictionary containing 'face_score' and 'body_score' if they exceed the similarity threshold.
+                The function may be modified to return additional information or decisions based on these scores.
 
-        Design Principle of face_fusion_threshold:
-            The face_fusion_threshold is designed to provide a control mechanism that filters out low-confidence
-            face recognition results from influencing the overall identity decision. By setting a threshold, only
-            face recognition results that meet or exceed this confidence level are considered. This is particularly
-            useful in environments where face data can be highly variable or when additional modalities (like body
-            or voice data) need to compensate for face data uncertainties.
+        Design Principle of similarity_thres:
+            The similarity_thres parameter is designed to provide a control mechanism that filters out
+            low-confidence face recognition results, preventing them from influencing the overall identity
+            decision. This is particularly useful in environments where face data can be highly variable, or
+            when other modalities (like body or voice data) need to compensate for uncertainties in face data.
         """
-        similarity = {}
-        if self.appearance_gallery.size > 0:
-            body_emb = self.body_embs[-1][np.newaxis, :]
-            body_sim = cosine_similarity(body_emb, self.appearance_gallery)[0]
-            similarity['body_score'] = round(body_sim.max(), 3)
+        cand_face_idx, face_score = self.calculate_similarity(
+            self.face_embs, self.face_gallery, similarity_thres, precise)
+        cand_body_idx, body_score = self.calculate_similarity(
+            self.body_embs, self.appearance_gallery, similarity_thres,precise)
+        # TODO cand_face_idx 和 cand_body_idx 打架的情况
 
-        if self.face_gallery.size > 0 and isinstance(self.face_embs[-1], np.ndarray):
-            face_emb = self.face_embs[-1][np.newaxis, :]
-            face_sim = cosine_similarity(face_emb, self.face_gallery)[0][0]
-            similarity['face_score'] = round(face_sim, 3)
+        similarity = {}
+        if face_score is not None:
+            similarity['face_score'] = face_score
+        if body_score is not None:
+            similarity['body_score'] = body_score
 
         score_fusion = self.add_score(**similarity)
-        score_fusion = {k : round(v, 3)for k, v in score_fusion.items()}
-        # similarity.update()
+        score_fusion = {k : round(v, precise)for k, v in score_fusion.items()}
 
         if verbose:
-            logger.debug(f"timestamp: {self.last_seen:4d}, fusion: {score_fusion}, similary: {similarity}")
+            info = "cands, "
+            if cand_face_idx is not None:
+                info += f"face {cand_face_idx}: {similarity.get('face_score'):.4f}, "
+            info += f"appearcne {cand_body_idx}: {similarity.get('body_score')}, "
+            info += f"conf: {score_fusion.get('conf')}"
+            logger.debug(info)
 
         return similarity
 
@@ -321,21 +315,28 @@ class Tracklet:
 
         return df
 
+    def calculate_similarity(self, embeddings, gallery, similarity_thres=.3, precise=4):
+        if gallery.size > 0 and isinstance(embeddings[-1], np.ndarray):
+            emb = embeddings[-1][np.newaxis, :]
+            sim = cosine_similarity(emb, gallery)[0]
+            cand_idx = sim.argmax()
+
+            if sim[cand_idx] > similarity_thres:
+                return cand_idx, round(sim[cand_idx], precise)
+
+        return None, 0
+
 
 if __name__ == "__main__":
-    user_gallery = load_checkpoint('../data/gallery/wenke/gallery.ckpt')
-    user_gallery['face_gallery'] = user_gallery['face_gallery'][np.newaxis, :]
-    logger.info(f"appearance_filenames: {user_gallery['appearance_filenames']}")
-    user_gallery
+    face_gallery, face_index_to_user, appearance_gallery, appearance_index_to_user = \
+        load_and_unpack_gallery_data('../data/gallery/gallery.ckpt')
 
-    track_id = 1
     tracks = convert_hdf_to_tracklet_data(fn='../data/feats/IMG_2232.h5')
+    track_id = 1
     track_data = tracks[track_id]
 
     tracker = Tracklet(track_id)
-    tracker.set_gallery(
-        face_gallery = user_gallery['face_gallery'],
-        appearance_gallery = user_gallery['appearance_gallery'])
+    tracker.set_gallery(face_gallery, appearance_gallery)
 
     for t, atts in track_data.items():
         tracker.update(timestamp = t, **atts)
@@ -348,5 +349,5 @@ if __name__ == "__main__":
     # distill
     rep_feats, _ = tracker.distill_feat(plot=True)
 
-# %%
 
+# %%
