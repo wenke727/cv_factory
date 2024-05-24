@@ -12,11 +12,6 @@ from algs.cluster import Clusterer, display_cluster_images
 from metric.similarity import cosine_similarity
 from gallery import load_and_unpack_gallery_data
 
-"""
-TODO
-2. face 和 body 冲突的情况
-"""
-
 MINIMUN_SIMILARITY_THRED = 0.3
 
 def convert_hdf_to_tracklet_data(fn):
@@ -51,30 +46,29 @@ def convert_hdf_to_tracklet_data(fn):
 
     return trackid_2_tracks
 
-class MultiModalFusion:
-    def __init__(self, face_weight=0.5, body_weight=0.25, voice_weight=0.25):
-        self.weights = {'face': face_weight, 'body': body_weight, 'voice': voice_weight}
-        self.score_history = []
-        self.face_history = []
-        self.body_history = []
-        self.voice_history = []
+def get_top_k_mean(arr, k=5):
+    if len(arr) == 0:
+        return 0
 
-    def update_weights(self, light_condition, noise_level):
-        # Change the wieghts by surroundings. But the ability to sense the env need to be build.
-        if light_condition < 0.5:
-            self.weights['face'] -= 0.2
-            self.weights['body'] += 0.1
-            self.weights['voice'] += 0.1
-        if noise_level > 0.5:
-            self.weights['voice'] -= 0.1
-            self.weights['face'] += 0.05
-            self.weights['body'] += 0.05
+    return np.mean(sorted(arr, reverse=True)[:k])
+
+class MultiModalFusion:
+    def __init__(self, face_weight = 0.5, body_weight = 0.25, voice_weight = 0.25):
+        self.weights = {'face': face_weight, 'body': body_weight, 'voice': voice_weight}
+
+        self.score_history = defaultdict(list)
+
+        self.face_history = defaultdict(list)
+        self.body_history = defaultdict(list)
+        self.voice_history = defaultdict(list)
+
 
     def add_score(self,
+                  uuid:str = None,
                   face_score:float = None,
                   body_score:float = None,
                   voice_score:float = None,
-                  face_fusion_threshold: float=MINIMUN_SIMILARITY_THRED):
+                  face_fusion_threshold:float = MINIMUN_SIMILARITY_THRED):
         """
         Add a new score to the history based on the weighted sum of individual modality scores,
         considering a threshold for the inclusion of face scores.
@@ -83,44 +77,33 @@ class MultiModalFusion:
             face_score (float, optional): The confidence score from face recognition.
             body_score (float, optional): The confidence score from body recognition.
             voice_score (float, optional): The confidence score from voice recognition.
-            face_fusion_threshold (float): The minimum threshold for face recognition score
-                                           to be considered in the fusion calculation.
-                                           Scores below this value are disregarded for the face modality.
 
         Returns:
             None. Updates the internal score history with the calculated weighted score.
-
-        The function calculates a combined score by applying predefined weights to the scores of
-        individual modalities. If the face score is below a specified threshold, it is not included
-        in the final score calculation. This method allows dynamic adjustment of the influence of
-        each modality based on its performance and reliability.
         """
         weight = 0
         score = 0
         if face_score is not None and face_score > face_fusion_threshold:
             score += face_score * self.weights['face']
             weight += self.weights['face']
-            self.face_history.append(face_score)
-
+            self.face_history[uuid].append(face_score)
         if body_score is not None:
             score += body_score * self.weights['body']
             weight += self.weights['body']
-            self.body_history.append(body_score)
-
+            self.body_history[uuid].append(body_score)
         if voice_score is not None:
             score += voice_score * self.weights['voice']
             weight += self.weights['voice']
-            self.voice_history.append(voice_score)
-
+            self.voice_history[uuid].append(voice_score)
         if weight > 0:
             score = score / weight
 
-        # TODO add uuid
-        self.score_history.append(score)
+        self.score_history[uuid].append(score)
 
-        return self.get_fusion_score()
+        # TODO 若是这个 uuid 不是最大的，则还是返回至大至，可适当考虑长度系数
+        return self.get_fusion_score(uuid)
 
-    def get_fusion_score(self, k=5):
+    def get_fusion_score(self, uuid, k=5):
         """
         Calculate the average of the square roots of the top k scores from the score history.
 
@@ -135,31 +118,40 @@ class MultiModalFusion:
         square root of the scores, which mitigates the influence of outlier low scores and
         emphasizes higher values more than a simple average would.
         """
-        if len(self.score_history) < k:
+        if len(self.score_history.get(uuid, [])) < k:
             return {}
 
-        def get_top_k_mean(atts):
-            return np.mean(sorted(atts, reverse=True)[:k])
-
         scores = {}
-        if self.score_history:
-            scores['conf'] = get_top_k_mean(self.score_history)
-        if self.face_history:
-            scores['face'] = get_top_k_mean(self.face_history)
-        if self.body_history:
-            scores['body'] = get_top_k_mean(self.body_history)
-        if self.voice_history:
-            scores['voice'] = get_top_k_mean(self.voice_history)
+        if self.score_history[uuid]:
+            scores['conf'] = get_top_k_mean(self.score_history.get(uuid, []), k)
+        if self.face_history[uuid]:
+            scores['face'] = get_top_k_mean(self.face_history[uuid], k)
+        if self.body_history[uuid]:
+            scores['body'] = get_top_k_mean(self.body_history[uuid], k)
+        if self.voice_history[uuid]:
+            scores['voice'] = get_top_k_mean(self.voice_history[uuid], k)
 
         return scores
 
-    def is_confirmed(self, threshold=.6):
+    def is_confirmed(self, threshold=.5):
         average_score = self.get_fusion_score()
 
         if average_score is not None and average_score > threshold:
             return True
 
         return False
+
+    def update_weights(self, light_condition, noise_level):
+        # Change the wieghts by surroundings. But the ability to sense the env need to be build.
+        if light_condition < 0.5:
+            self.weights['face'] -= 0.2
+            self.weights['body'] += 0.1
+            self.weights['voice'] += 0.1
+        if noise_level > 0.5:
+            self.weights['voice'] -= 0.1
+            self.weights['face'] += 0.05
+            self.weights['body'] += 0.05
+
 
 class Tracklet:
     def __init__(self,
@@ -260,7 +252,7 @@ class Tracklet:
         if body_score is not None:
             similarity['body_score'] = body_score
 
-        score_fusion = self.add_score(**similarity)
+        score_fusion = self.add_score(body_uuid, **similarity)
         score_fusion = {k : round(v, precise)for k, v in score_fusion.items()}
 
         if verbose:
@@ -274,26 +266,8 @@ class Tracklet:
 
         return similarity
 
-    def add_score(self, face_score=None, body_score=None, voice_score=None, face_fusion_threshold=MINIMUN_SIMILARITY_THRED):
-        # TODO fusion 阶段若是存在多个 uuid 的情况
-        return self.fusion_modle.add_score(face_score, body_score, voice_score, face_fusion_threshold)
-
-    def set_gallery(self,
-                    face_gallery, face_index_to_user,
-                    appearance_gallery, appearance_index_to_user,
-                    voice_gallery=None, voice_index_to_user=None):
-        self.face_gallery = face_gallery
-        self.face_index_to_user = face_index_to_user
-        self.appearance_gallery = appearance_gallery
-        self.appearance_index_to_user = appearance_index_to_user
-        self.voice_fallery = voice_gallery
-        self.voice_index_to_user = voice_index_to_user
-
-    def set_searcher(self, face_searcher, appearance_searcher, voice_searcher=None):
-        self.face_seacher = face_searcher
-        self.appearance_searcher = appearance_searcher
-        if voice_searcher is not None:
-            self.voice_searcher = voice_searcher
+    def add_score(self, uuid, face_score=None, body_score=None, voice_score=None):
+        return self.fusion_modle.add_score(uuid, face_score, body_score, voice_score)
 
     def is_active(self, timeout_seconds=300):
         return (datetime.datetime.now() - self.last_seen).total_seconds() < timeout_seconds
@@ -327,9 +301,6 @@ class Tracklet:
             'timestamp': self.timestamps[-1]
         }
 
-    def __repr__(self):
-        return f"<Tracklet {self.track_id} | Last seen: {self.last_seen} >" # | State: {self.state}
-
     def convert_2_dataframe(self, with_atts=False):
         df = pd.DataFrame({
             'timestamp': self.timestamps,
@@ -341,6 +312,9 @@ class Tracklet:
             df = pd.concat([df, pd.DataFrame.from_dict(self.data)], axis=1)
 
         return df
+
+    def __repr__(self):
+        return f"<Tracklet {self.track_id} | Last seen: {self.last_seen} >" # | State: {self.state}
 
 
 if __name__ == "__main__":

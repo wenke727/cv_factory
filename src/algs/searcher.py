@@ -83,7 +83,7 @@ class GallerySearcher:
         return 0, None, None
 
     def __repr__(self):
-        return f"NumpySearcher: {str(self.idx_2_uuid)}"
+        return f"Gallery Searcher: {str(self.idx_2_uuid)}"
 
 
 class FlatSearcher:
