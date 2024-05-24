@@ -7,7 +7,7 @@ from loguru import logger
 from datetime import datetime
 from collections import defaultdict
 
-from algs.searcher import NumpySearcher
+from algs.searcher import GallerySearcher
 from algs.cluster import Clusterer, display_cluster_images
 from metric.similarity import cosine_similarity
 from gallery import load_and_unpack_gallery_data
@@ -16,6 +16,8 @@ from gallery import load_and_unpack_gallery_data
 TODO
 2. face 和 body 冲突的情况
 """
+
+MINIMUN_SIMILARITY_THRED = 0.3
 
 def convert_hdf_to_tracklet_data(fn):
     df_feats = pd.read_hdf(fn)
@@ -72,7 +74,7 @@ class MultiModalFusion:
                   face_score:float = None,
                   body_score:float = None,
                   voice_score:float = None,
-                  face_fusion_threshold: float=0.4):
+                  face_fusion_threshold: float=MINIMUN_SIMILARITY_THRED):
         """
         Add a new score to the history based on the weighted sum of individual modality scores,
         considering a threshold for the inclusion of face scores.
@@ -113,6 +115,7 @@ class MultiModalFusion:
         if weight > 0:
             score = score / weight
 
+        # TODO add uuid
         self.score_history.append(score)
 
         return self.get_fusion_score()
@@ -159,15 +162,11 @@ class MultiModalFusion:
         return False
 
 class Tracklet:
-    def __init__(self, track_id):
-        # gallery relarted
-        self.face_gallery = np.array([])
-        self.voice_fallery = np.array([])
-        self.appearance_gallery = np.array([])
-        self.face_index_to_user = np.array([])
-        self.appearance_index_to_user = np.array([])
-        self.voice_index_to_user = np.array([])
-
+    def __init__(self,
+                 track_id,
+                 face_seacher:GallerySearcher,
+                 appearance_searcher:GallerySearcher,
+                 voice_searcher:GallerySearcher = None):
         self.track_id = track_id
         self.timestamps = []
         self.crop_imgs = {}
@@ -181,9 +180,12 @@ class Tracklet:
 
         # others attrs
         self.data = defaultdict(dict)
-
-        self.match_history = []
         self.last_seen = None
+
+        # gallery seacher
+        self.face_seacher = face_seacher
+        self.appearance_searcher = appearance_searcher
+        self.voice_searcher = voice_searcher
 
         self.fusion_modle = MultiModalFusion(face_weight=.5, body_weight=.25, voice_weight=.25)
         # self.state = 'active'  # Options: active, inactive, completed
@@ -217,21 +219,17 @@ class Tracklet:
         Identifies and fuses modalities per frame using dynamic weights based on environmental
         factors and modality reliability, specifically adjusting face recognition contributions.
 
-        The function calculates similarity scores for face and body modalities, applies a threshold to
-        filter out low-confidence results, and then fuses these scores to determine a combined result.
+        This function calculates similarity scores for face and body modalities, applies a threshold to
+        filter out low-confidence results, and then dynamically fuses these scores to determine a combined result.
+        It prefers face recognition results but considers body recognition when face data is not conclusive.
 
         Args:
-            similarity_thres (float): The threshold for recognition confidence. Scores below this
-                                    threshold are not considered reliable and are thus filtered out.
-                                    Default is 0.3.
-            precise (int): The number of decimal places to which results should be rounded. This affects
-                        the precision of the output scores. Default is 4.
-            verbose (bool): If set to True, detailed debug information, including candidate indices and scores,
-                            will be logged. Default is True.
+            similarity_thres (float): The threshold for recognition confidence.
+            precise (int): The number of decimal places to which results should be rounded.
+            verbose (bool): If True, logs detailed debug information.
 
         Returns:
-            dict: A dictionary containing 'face_score' and 'body_score' if they exceed the similarity threshold.
-                The function may be modified to return additional information or decisions based on these scores.
+            dict: Contains 'face_score', 'body_score', and a decision based on the fused result.
 
         Design Principle of similarity_thres:
             The similarity_thres parameter is designed to provide a control mechanism that filters out
@@ -239,11 +237,22 @@ class Tracklet:
             decision. This is particularly useful in environments where face data can be highly variable, or
             when other modalities (like body or voice data) need to compensate for uncertainties in face data.
         """
-        cand_face_idx, face_score = self.calculate_similarity(
-            self.face_embs, self.face_gallery, similarity_thres, precise)
-        cand_body_idx, body_score = self.calculate_similarity(
-            self.body_embs, self.appearance_gallery, similarity_thres,precise)
-        # TODO cand_face_idx 和 cand_body_idx 打架的情况
+        face_score, _, face_uuid = self.face_seacher.search_best(
+            self.face_embs[-1], similarity_thres)
+        body_score, _, body_uuid = self.appearance_searcher.search_best(
+            self.body_embs[-1], similarity_thres)
+        if face_uuid is not None and face_uuid != body_uuid:
+            logger.warning(f"Mismatch in UUIDs - Face: {face_uuid}, Body: {body_uuid}. Prioritizing based on scores.")
+            # Adjust scores based on confidence and a predefined strategy
+            if face_score * 2 >= body_score:
+                body_score = 0
+                body_uuid = None
+            else:
+                face_score = 0
+                face_uuid = None
+
+            body_score = 0
+            body_uuid = None
 
         similarity = {}
         if face_score is not None:
@@ -256,16 +265,17 @@ class Tracklet:
 
         if verbose:
             info = "Similarity: "
-            if cand_face_idx is not None:
-                info += f"😊 {self.face_index_to_user[cand_face_idx]}: {similarity.get('face_score'):.4f}, "
-            info += f"🚶 {self.appearance_index_to_user[cand_body_idx]}: {similarity.get('body_score')}, "
+            if face_uuid is not None:
+                info += f"😊 {face_uuid}: {similarity.get('face_score'):.4f}, "
+            info += f"🚶 {body_uuid}: {similarity.get('body_score'):.4f}, "
             if score_fusion.get('conf'):
                 info += f"🚀 conf: {score_fusion.get('conf')}"
             logger.debug(info)
 
         return similarity
 
-    def add_score(self, face_score=None, body_score=None, voice_score=None, face_fusion_threshold=0.4):
+    def add_score(self, face_score=None, body_score=None, voice_score=None, face_fusion_threshold=MINIMUN_SIMILARITY_THRED):
+        # TODO fusion 阶段若是存在多个 uuid 的情况
         return self.fusion_modle.add_score(face_score, body_score, voice_score, face_fusion_threshold)
 
     def set_gallery(self,
@@ -278,6 +288,12 @@ class Tracklet:
         self.appearance_index_to_user = appearance_index_to_user
         self.voice_fallery = voice_gallery
         self.voice_index_to_user = voice_index_to_user
+
+    def set_searcher(self, face_searcher, appearance_searcher, voice_searcher=None):
+        self.face_seacher = face_searcher
+        self.appearance_searcher = appearance_searcher
+        if voice_searcher is not None:
+            self.voice_searcher = voice_searcher
 
     def is_active(self, timeout_seconds=300):
         return (datetime.datetime.now() - self.last_seen).total_seconds() < timeout_seconds
@@ -326,28 +342,25 @@ class Tracklet:
 
         return df
 
-    def calculate_similarity(self, embeddings, gallery, similarity_thres=.3, precise=4):
-        if gallery.size > 0 and isinstance(embeddings[-1], np.ndarray):
-            emb = embeddings[-1][np.newaxis, :]
-            sim = cosine_similarity(emb, gallery)[0]
-            cand_idx = sim.argmax()
-
-            if sim[cand_idx] > similarity_thres:
-                return cand_idx, round(sim[cand_idx], precise)
-
-        return None, 0
-
 
 if __name__ == "__main__":
-    face_gallery, face_index_to_user, appearance_gallery, appearance_index_to_user = \
-        load_and_unpack_gallery_data('../data/gallery/gallery.ckpt')
-
+    # 1. prepare tracklet
     tracks = convert_hdf_to_tracklet_data(fn='../data/feats/IMG_2232.h5')
     track_id = 1
     track_data = tracks[track_id]
 
-    tracker = Tracklet(track_id)
-    tracker.set_gallery(face_gallery, face_index_to_user, appearance_gallery, appearance_index_to_user)
+    # 2. prepare gallery
+    face_gallery, face_index_to_user, appearance_gallery, appearance_index_to_user = \
+        load_and_unpack_gallery_data('../data/gallery/gallery.ckpt')
+
+    face_searcher = GallerySearcher(feat_len=512)
+    face_searcher.add(face_gallery, face_index_to_user)
+
+    appearance_searcher = GallerySearcher(feat_len=256)
+    appearance_searcher.add(appearance_gallery, appearance_index_to_user)
+
+    # 3. main
+    tracker = Tracklet(track_id, face_searcher, appearance_searcher)
 
     for t, atts in track_data.items():
         tracker.update(timestamp = t, **atts)

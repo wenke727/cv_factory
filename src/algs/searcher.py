@@ -1,9 +1,10 @@
 import numpy as np
+from metric.similarity import cosine_similarity
 
 def normalize(feature):
     return feature / (np.linalg.norm(feature) + 1e-12)
 
-class NumpySearcher:
+class GallerySearcher:
     def __init__(self, feat_len=256):
         self.feat_len = feat_len
         self.gallery = None
@@ -51,6 +52,40 @@ class NumpySearcher:
 
         return topk_scores, topk_idxs, topk_uuids
 
+    def search_best(self, query, similarity_thres=.3):
+        """
+        Searches the gallery for the best match above a specified similarity threshold.
+
+        Args:
+            query (np.ndarray): The query feature vector or array of vectors.
+            similarity_thres (float): The minimum cosine similarity threshold required to consider
+                                      a match valid.
+
+        Returns:
+            tuple: A tuple containing the highest similarity score, the corresponding index,
+                   and the UUID of the best match if the score exceeds the threshold. If no match
+                   exceeds the threshold, returns (0, None, None).
+        """
+        if not isinstance(query, np.ndarray):
+            return 0, None, None
+
+        query = np.array(query, dtype=np.float32)
+        if query.ndim == 1:
+            query = query[np.newaxis, :]  # Make query two-dimensional
+
+        if self.gallery is not None:
+            sim = cosine_similarity(query, self.gallery)[0]
+            cand_idx = sim.argmax()
+
+            if sim[cand_idx] > similarity_thres:
+                return sim[cand_idx], cand_idx, self.idx_2_uuid[cand_idx]
+
+        return 0, None, None
+
+    def __repr__(self):
+        return f"NumpySearcher: {str(self.idx_2_uuid)}"
+
+
 class FlatSearcher:
     def __init__(self, ngpu=1, feat_len=256):
         import faiss
@@ -81,7 +116,7 @@ class FlatSearcher:
 
 # Example usage
 if __name__ == "__main__":
-    searcher = NumpySearcher()
+    searcher = GallerySearcher()
     features = np.random.rand(10, 256)  # Random gallery features
     uuids = ['id1', 'id2', 'id3', 'id4', 'id5', 'id6', 'id7', 'id8', 'id9', 'id10']
     searcher.add(features, uuids=uuids)
