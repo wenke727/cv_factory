@@ -62,7 +62,6 @@ class MultiModalFusion:
         self.body_history = defaultdict(list)
         self.voice_history = defaultdict(list)
 
-
     def add_score(self,
                   uuid:str = None,
                   face_score:float = None,
@@ -229,17 +228,19 @@ class Tracklet:
             decision. This is particularly useful in environments where face data can be highly variable, or
             when other modalities (like body or voice data) need to compensate for uncertainties in face data.
         """
-        face_score, _, face_uuid = self.face_seacher.search_best(
-            self.face_embs[-1], similarity_thres)
-        body_score, _, body_uuid = self.appearance_searcher.search_best(
-            self.body_embs[-1], similarity_thres)
+        face_score, face_uuid = self.search_by_face(similarity_thres)
+        body_score, body_uuid = self.search_by_appearance(similarity_thres)
+
+        # deal with the face and appearane conflit
         if face_uuid is not None and face_uuid != body_uuid:
-            logger.warning(f"Mismatch in UUIDs - Face: {face_uuid}, Body: {body_uuid}. Prioritizing based on scores.")
-            # Adjust scores based on confidence and a predefined strategy
+
             if face_score * 2 >= body_score:
+                logger.warning(f"😊 Mismatch in UUIDs - Face: {face_uuid}, Body: {body_uuid}. Prioritizing based on scores.")
+                # TODO 容易混淆的外观特征
                 body_score = 0
                 body_uuid = None
             else:
+                logger.warning(f"🚶 Mismatch in UUIDs - Face: {face_uuid}, Body: {body_uuid}. Prioritizing based on scores.")
                 face_score = 0
                 face_uuid = None
 
@@ -256,7 +257,7 @@ class Tracklet:
         score_fusion = {k : round(v, precise)for k, v in score_fusion.items()}
 
         if verbose:
-            info = "Similarity: "
+            info = f"{self.last_seen:3d}, Similarity: "
             if face_uuid is not None:
                 info += f"😊 {face_uuid}: {similarity.get('face_score'):.4f}, "
             info += f"🚶 {body_uuid}: {similarity.get('body_score'):.4f}, "
@@ -265,6 +266,22 @@ class Tracklet:
             logger.debug(info)
 
         return similarity
+
+    def search_by_face(self, similarity_thres=.3):
+        if len(self.face_embs) == 0:
+            return 0, None
+
+        score, _, uuid = self.face_seacher.search_best(self.face_embs[-1], similarity_thres)
+
+        return score, uuid
+
+    def search_by_appearance(self, similarity_thres=.3):
+        if len(self.body_embs) == 0:
+            return 0, None
+
+        score, _, uuid = self.appearance_searcher.search_best(self.body_embs[-1], similarity_thres)
+
+        return score, uuid
 
     def add_score(self, uuid, face_score=None, body_score=None, voice_score=None):
         return self.fusion_modle.add_score(uuid, face_score, body_score, voice_score)
@@ -333,6 +350,15 @@ if __name__ == "__main__":
     appearance_searcher = GallerySearcher(feat_len=256)
     appearance_searcher.add(appearance_gallery, appearance_index_to_user)
 
+    track_data[85] = {
+        'face_emb': face_gallery[2], # zhaoming
+        'body_emb': track_data[100]['body_emb'], # zhaoming
+    }
+    sorted_keys = sorted(track_data)
+    track_data = {key: track_data[key] for key in sorted_keys}
+    track_data.keys()
+
+    #%%
     # 3. main
     tracker = Tracklet(track_id, face_searcher, appearance_searcher)
 
