@@ -50,7 +50,7 @@ def get_top_k_mean(arr, k=5):
     if len(arr) == 0:
         return 0
 
-    return np.mean(sorted(arr, reverse=True)[:k])
+    return np.sum(sorted(arr, reverse=True)[:k]) / k
 
 class MultiModalFusion:
     def __init__(self, face_weight = 0.5, body_weight = 0.25, voice_weight = 0.25):
@@ -63,7 +63,8 @@ class MultiModalFusion:
         self.voice_history = defaultdict(list)
 
     def add_score(self,
-                  uuid:str = None,
+                  face_uuid:str = None,
+                  body_uuid:str = None,
                   face_score:float = None,
                   body_score:float = None,
                   voice_score:float = None,
@@ -80,13 +81,34 @@ class MultiModalFusion:
         Returns:
             None. Updates the internal score history with the calculated weighted score.
         """
+        if face_uuid is not None and face_uuid != body_uuid:
+            if face_score * 2 >= body_score:
+                logger.warning(f"😊 Mismatch in UUIDs - Face: {face_uuid}, Body: {body_uuid}. Prioritizing based on scores.")
+                # TODO 容易混淆的外观特征
+                body_score = None
+                body_uuid = None
+            else:
+                logger.warning(f"🚶 Mismatch in UUIDs - Face: {face_uuid}, Body: {body_uuid}. Prioritizing based on scores.")
+                face_score = None
+                face_uuid = None
+
+            body_score = 0
+            body_uuid = None
+
+        if face_uuid is not None:
+            uuid = face_uuid
+        elif body_uuid is not None:
+            uuid = body_uuid
+        else:
+            return {'conf': 0}
+
         weight = 0
         score = 0
         if face_score is not None and face_score > face_fusion_threshold:
             score += face_score * self.weights['face']
             weight += self.weights['face']
             self.face_history[uuid].append(face_score)
-        if body_score is not None:
+        if body_score is not None and body_score > 0:
             score += body_score * self.weights['body']
             weight += self.weights['body']
             self.body_history[uuid].append(body_score)
@@ -118,11 +140,20 @@ class MultiModalFusion:
         emphasizes higher values more than a simple average would.
         """
         if len(self.score_history.get(uuid, [])) < k:
-            return {}
+            return {'conf': 0, 'status': 1}
+
+        uuids = self.score_history.keys()
+        uuid_2_score = {}
+        for id in uuids:
+            uuid_2_score[id]= get_top_k_mean(self.score_history.get(id, []), k)
+
+        if uuid_2_score.get(uuid, 0) < max(uuid_2_score.values()):
+            logger.warning(f"和历史有冲突，{uuid_2_score}")
+            return {'conf': 0, 'status': 2}
 
         scores = {}
         if self.score_history[uuid]:
-            scores['conf'] = get_top_k_mean(self.score_history.get(uuid, []), k)
+            scores['conf'] = uuid_2_score[uuid]
         if self.face_history[uuid]:
             scores['face'] = get_top_k_mean(self.face_history[uuid], k)
         if self.body_history[uuid]:
@@ -150,7 +181,6 @@ class MultiModalFusion:
             self.weights['voice'] -= 0.1
             self.weights['face'] += 0.05
             self.weights['body'] += 0.05
-
 
 class Tracklet:
     def __init__(self,
@@ -232,28 +262,13 @@ class Tracklet:
         body_score, body_uuid = self.search_by_appearance(similarity_thres)
 
         # deal with the face and appearane conflit
-        if face_uuid is not None and face_uuid != body_uuid:
-
-            if face_score * 2 >= body_score:
-                logger.warning(f"😊 Mismatch in UUIDs - Face: {face_uuid}, Body: {body_uuid}. Prioritizing based on scores.")
-                # TODO 容易混淆的外观特征
-                body_score = 0
-                body_uuid = None
-            else:
-                logger.warning(f"🚶 Mismatch in UUIDs - Face: {face_uuid}, Body: {body_uuid}. Prioritizing based on scores.")
-                face_score = 0
-                face_uuid = None
-
-            body_score = 0
-            body_uuid = None
-
         similarity = {}
         if face_score is not None:
             similarity['face_score'] = face_score
         if body_score is not None:
             similarity['body_score'] = body_score
 
-        score_fusion = self.add_score(body_uuid, **similarity)
+        score_fusion = self.fusing(face_uuid, body_uuid, **similarity)
         score_fusion = {k : round(v, precise)for k, v in score_fusion.items()}
 
         if verbose:
@@ -283,8 +298,8 @@ class Tracklet:
 
         return score, uuid
 
-    def add_score(self, uuid, face_score=None, body_score=None, voice_score=None):
-        return self.fusion_modle.add_score(uuid, face_score, body_score, voice_score)
+    def fusing(self, face_uuid, body_uuid, face_score=None, body_score=None, voice_score=None):
+        return self.fusion_modle.add_score(face_uuid, body_uuid, face_score, body_score, voice_score)
 
     def is_active(self, timeout_seconds=300):
         return (datetime.datetime.now() - self.last_seen).total_seconds() < timeout_seconds
@@ -358,12 +373,25 @@ if __name__ == "__main__":
     track_data = {key: track_data[key] for key in sorted_keys}
     track_data.keys()
 
-    #%%
     # 3. main
     tracker = Tracklet(track_id, face_searcher, appearance_searcher)
 
     for t, atts in track_data.items():
         tracker.update(timestamp = t, **atts)
+
+    uuids = tracker.fusion_modle.score_history.keys()
+    logger.info(f"uuids: {uuids}")
+
+
+    logger.info(f"Face, wenke: {tracker.fusion_modle.face_history['wenke']}")
+    logger.info(f"Face, zhaoming: {tracker.fusion_modle.face_history['zhaoming']}")
+
+    logger.info(f"Body, wenke: {tracker.fusion_modle.body_history['wenke']}")
+    logger.info(f"Body, zhaoming: {tracker.fusion_modle.body_history['zhaoming']}")
+
+    logger.info(f"Fusion, wenke: {tracker.fusion_modle.get_fusion_score('wenke')}")
+    logger.info(f"Fusion, zhaoming: {tracker.fusion_modle.get_fusion_score('zhaoming')}")
+
 
     #%%
     df = tracker.convert_2_dataframe(with_atts=True)
@@ -372,6 +400,10 @@ if __name__ == "__main__":
     #%%
     # distill
     rep_feats, _ = tracker.distill_feat(plot=True)
+
+
+# %%
+
 
 
 # %%
